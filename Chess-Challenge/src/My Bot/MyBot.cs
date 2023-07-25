@@ -1,5 +1,4 @@
 ﻿//#define DEBUGGING
-using System;
 using ChessChallenge.API;
 using System;
 using System.Linq;
@@ -48,17 +47,19 @@ public class MyBot : IChessBot
 
     private Transposition[] m_TPTable;
 
-    private const ulong k_TpMask = 0xFFFFF;
+    private const ulong k_TpMask = 0x1;
     private const int k_maxDepth = 4;
-    private const int k_qSearchDepth = 3;
-    private const int k_endgameDepth = 10;
+    private const int k_qSearchDepth = 4;
+    private const int k_endgameDepth = 4;
+    private const int k_primaryMoves = 4;
+    private const int k_primaryMoveBonusDepth = 1;
 
     private Move m_bestMove;
 
     public MyBot()
     {
         m_PSQTables = new sbyte[8, 8, 8];
-        m_TPTable = new Transposition[0x100000];
+        m_TPTable = new Transposition[k_TpMask + 1];
         UnpackPSQTables(ref m_PSQTables);
     }
 
@@ -95,9 +96,14 @@ public class MyBot : IChessBot
         ulong zHash = board.ZobristKey;
         ulong zIndex = zHash & k_TpMask;
         bool addToTpTable = false;
-        if(m_TPTable[zIndex].zobristHash == zHash && m_TPTable[zIndex].depth >= depth && m_TPTable[zIndex].move != Move.NullMove)
+        if 
+        (
+            m_TPTable[zIndex].zobristHash == zHash &&        //is the same board state
+            m_TPTable[zIndex].depth >= depth &&              //deeper than current depth
+            m_TPTable[zIndex].move != Move.NullMove &&       //not a null move (???)
+            allLegalmoves.Contains(m_TPTable[zIndex].move))  //actually legal (also ????)
         {
-            if(depth == 0) m_bestMove = m_TPTable[zIndex].move;
+            if (depth == 0) m_bestMove = m_TPTable[zIndex].move;
             return m_TPTable[zIndex].evaluation;
         }
         else
@@ -109,20 +115,23 @@ public class MyBot : IChessBot
 
         if (allLegalmoves.Length == 0 || (depth >= maxDepth && !qSearch))
         {
-#if DEBUGGING
-            d_numPositions++;
-#endif
             return Evaluate(board, isEndgame) * color;
         }
 
         Move[] moves = qSearch ? qSearchMoves : allLegalmoves;
-        moves = OrderMoves(moves, board);
+        List<Tuple<Move, int>> orderedMoves = new();
+        foreach(Move m in moves) orderedMoves.Add(new Tuple<Move, int>(m, OrderMove(m, board, isEndgame)));
+        orderedMoves.Sort((a, b) => b.Item2.CompareTo(a.Item2));
         int recordEval = int.MinValue;
         int newMaxDepth = k_maxDepth;
         if (qSearch) newMaxDepth += k_qSearchDepth;
         else if (isEndgame) newMaxDepth += k_endgameDepth;
-        foreach (Move m in moves)
+        newMaxDepth += k_primaryMoveBonusDepth;
+        int i = k_primaryMoves;
+        foreach (Tuple<Move, int> move in orderedMoves)
         {
+            Move m = move.Item1;
+            if(i-- == 0) newMaxDepth -= k_primaryMoveBonusDepth;
             board.MakeMove(m);
             int eval = -Search(board, depth + 1, newMaxDepth, -beta, -alpha, -color, isEndgame);
             board.UndoMove(m);
@@ -130,9 +139,9 @@ public class MyBot : IChessBot
             {
                 recordEval = eval;
                 if (depth == 0) m_bestMove = m;
-                if(addToTpTable)
+                if (addToTpTable)
                 {
-                    m_TPTable[zIndex].evaluation  = recordEval;
+                    m_TPTable[zIndex].evaluation = recordEval;
                     m_TPTable[zIndex].move = m;
                 }
             }
@@ -154,42 +163,40 @@ public class MyBot : IChessBot
         {
             for (int f = 0; f < 8; f++)
             {
-                Square currentSquare = new Square(f, r);
-                Piece currentPiece = board.GetPiece(currentSquare);
+                Piece currentPiece = board.GetPiece(new Square(f, r));
                 ScoreType sType = (ScoreType)((int)(currentPiece.PieceType) - 1);
-                if (isEndgame)
+                if (isEndgame & currentPiece.PieceType == PieceType.King)
                 {
                     sType++;
                     if (board.IsWhiteToMove ^ currentPiece.IsWhite) sType++;
                 }
                 if (sType >= 0)
                 {
-                    positionalScore += GetPieceBonusScore(sType, currentPiece.IsWhite, r, f);
-                    if (sType == ScoreType.KingHunt) positionalScore *= -1;
+                    positionalScore += GetPieceBonusScore(sType, currentPiece.IsWhite, r, f) * (sType == ScoreType.KingHunt ? -1 : 1);
                 }
             }
         }
         return materialCount + positionalScore;
     }
 
-    private Move[] OrderMoves(Move[] moves, Board board)
+    private int OrderMove(Move move, Board board, bool isEndgame)
     {
-        Move[] orderedMoves = new Move[moves.Length];
-        List<Tuple<Move, int>> moveSorter = new();
-        foreach (Move m in moves)
+        int priority = 0;
+        //prioritize checks
+        board.MakeMove(move);
+        if(board.IsInCheck()) priority += isEndgame ? 125 : 25;
+        //prioritize attacks
+        else if(board.TrySkipTurn())
         {
-            int priority = 0;
-            //highly prioritize captures
-            if (m.IsCapture) priority += k_mvvValues[(int)m.CapturePieceType] + k_lvaValues[(int)m.MovePieceType];
-            Tuple<Move, int> movePriPair = new Tuple<Move, int>(m, priority);
-            moveSorter.Add(movePriPair);
+            if(board.GetLegalMoves(true).Length > 0) priority += 20;
+            board.UndoSkipTurn();
         }
-        moveSorter = moveSorter.OrderByDescending(x => x.Item2).ToList();
-        for (int i = 0; i < moveSorter.Count; i++)
-        {
-            orderedMoves[i] = moveSorter[i].Item1;
-        }
-        return orderedMoves;
+        board.UndoMove(move);
+        //prioritize promoting pawns in the endgame
+        if(isEndgame && move.MovePieceType == PieceType.Pawn) priority += 100;
+        //prioritize captures
+        if (move.IsCapture) priority += k_mvvValues[(int)move.CapturePieceType] + k_lvaValues[(int)move.MovePieceType];
+        return priority;
     }
 
     private void UnpackPSQTables(ref sbyte[,,] psqTables)
@@ -219,8 +226,9 @@ public class MyBot : IChessBot
 
     private bool IsEndgame(Board board)
     {
-        if ((board.GetPieceBitboard(PieceType.Pawn, true) | board.GetPieceBitboard(PieceType.Knight, true) | board.GetPieceBitboard(PieceType.Bishop, true) | board.GetPieceBitboard(PieceType.Rook, true) | board.GetPieceBitboard(PieceType.Queen, true)) == 0) return true;
+        /* if ((board.GetPieceBitboard(PieceType.Pawn, true) | board.GetPieceBitboard(PieceType.Knight, true) | board.GetPieceBitboard(PieceType.Bishop, true) | board.GetPieceBitboard(PieceType.Rook, true) | board.GetPieceBitboard(PieceType.Queen, true)) == 0) return true;
         else if ((board.GetPieceBitboard(PieceType.Pawn, false) | board.GetPieceBitboard(PieceType.Knight, false) | board.GetPieceBitboard(PieceType.Bishop, false) | board.GetPieceBitboard(PieceType.Rook, false) | board.GetPieceBitboard(PieceType.Queen, false)) == 0) return true;
-        return false;
+        return false; */
+        return (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) <= 10);
     }
 }
