@@ -1,4 +1,4 @@
-﻿//#define DEBUGGING
+﻿#define DEBUGGING
 using ChessChallenge.API;
 using System;
 using System.Linq;
@@ -6,10 +6,6 @@ using System.Collections.Generic;
 
 public class MyBot : IChessBot
 {
-#if DEBUGGING
-    private int d_numPositions;
-#endif
-
     private readonly int[] k_pieceValues = { 0, 100, 300, 310, 500, 900, 20000 };
     private readonly int[] k_mvvValues = { 0, 10, 20, 30, 40, 50, 0 };
     private readonly int[] k_lvaValues = { 0, 5, 4, 3, 2, 1, 0 };
@@ -32,11 +28,12 @@ public class MyBot : IChessBot
 
     private Transposition[] m_TPTable;
 
-    private ulong k_TpMask = 0x1;
-    private int k_maxDepth = 4;
-    private int k_endgameDepth = 2;
-    private int k_primaryMoves = 4;
-    private int k_primaryMoveBonusDepth = 1;
+    private ulong k_TpMask = 0xFFFFFF;
+    private int k_maxDepth = 5;
+    private int k_endgameDepth = 3;
+
+    private int k_endgamePieces = 6;
+    private int k_primaryMoveBonusDepth = 2;
 
     private Move m_bestMove;
 
@@ -47,14 +44,13 @@ public class MyBot : IChessBot
 
     public Move Think(Board board, Timer timer)
     {
+        if(board.GetLegalMoves().Length == 1) return board.GetLegalMoves()[0];
+        Transposition defaultTP = m_TPTable[board.ZobristKey & k_TpMask];
+        m_bestMove = (defaultTP.zobristHash == board.ZobristKey) ? defaultTP.move : Move.NullMove;
+        int eval = Search(board, 0, k_maxDepth, int.MinValue, int.MaxValue, board.IsWhiteToMove ? 1 : -1, false);
 #if DEBUGGING
-        d_numPositions = 0;
-        Console.WriteLine(Search(board, 0, k_maxDepth, int.MinValue, int.MaxValue, board.IsWhiteToMove ? 1 : -1, false));
-#else
-        Search(board, 0, k_maxDepth, int.MinValue, int.MaxValue, board.IsWhiteToMove ? 1 : -1, false);
-#endif
-#if DEBUGGING
-        Console.WriteLine("Positions Evaluated: " + d_numPositions);
+        Console.WriteLine(eval));
+        Console.WriteLine(PrintPV(board.ZobristKey, board, 10, ""));
 #endif
 
         return m_bestMove;
@@ -75,7 +71,7 @@ public class MyBot : IChessBot
         bool qSearch = (depth >= maxDepth) && (allAttackMoves.Length != 0);
 
         //Check for leaf node conditions
-        if (board.IsDraw()) return 0;
+        if (board.IsDraw()) return -10;
         if (board.IsInCheckmate()) return -((int.MaxValue / 2) - depth);
 
         //Check Transposition Table
@@ -127,15 +123,15 @@ public class MyBot : IChessBot
         #region MAXDEPTHCALC
         int newMaxDepth = k_maxDepth; //default
         if (isEndgame) newMaxDepth += k_endgameDepth; //add depth if in endgame
-        newMaxDepth += k_primaryMoveBonusDepth; //add primary search bonus
         #endregion
-        int i = k_primaryMoves;
+        int i = k_primaryMoveBonusDepth;
 
         #region SEARCH
         foreach (Tuple<Move, int> move in orderedMoves)
         {
             Move m = move.Item1;
-            if(i-- == 0) newMaxDepth -= k_primaryMoveBonusDepth; //when no longer in primary moves, disable bonus depth
+            i = Math.Max(i - 1, 0); 
+            newMaxDepth += i; //when no longer in primary moves, disable bonus depth
             board.MakeMove(m);
             int eval = -Search(board, depth + 1, newMaxDepth, -beta, -alpha, -color, isEndgame);
             board.UndoMove(m);
@@ -165,13 +161,20 @@ public class MyBot : IChessBot
 
         for (int i = 0; ++i < 7;)
         {
-            materialCount += (board.GetPieceList((PieceType)i, true).Count - board.GetPieceList((PieceType)i, false).Count) * k_pieceValues[i];
+            PieceList whitePieces = board.GetPieceList((PieceType)i, true);
+            PieceList blackPieces = board.GetPieceList((PieceType)i, false);
+            materialCount += (whitePieces.Count - blackPieces.Count) * k_pieceValues[i];
+            positionalScore += PieceEval(whitePieces, i, true, isEndgame);
+            positionalScore += PieceEval(blackPieces, i, false, isEndgame);
         }
+
         return materialCount + positionalScore;
     }
     private int OrderMove(Move move, Board board, bool isEndgame)
     {
         int priority = 0;
+        Transposition tp = m_TPTable[board.ZobristKey & k_TpMask];
+        if(tp.move == move && tp.zobristHash == board.ZobristKey) priority += 1000;
         //PUSH THE PAWN
         if(isEndgame && move.MovePieceType == PieceType.Pawn) priority += 30;
         //prioritize captures
@@ -181,10 +184,82 @@ public class MyBot : IChessBot
     
     private bool IsEndgame(Board board)
     {
-        return (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) <= 10);
+        return (BitboardHelper.GetNumberOfSetBits(board.AllPiecesBitboard) <= k_endgamePieces);
     }
     private int MVVLVA(int moveType, int captureType)
     {
         return k_mvvValues[captureType] + k_lvaValues[moveType];
     }
+
+    private int PieceEval(PieceList pieces, int type, bool isWhite, bool isEndgame)
+    {
+        if(type == 1) return PawnEval(pieces, isWhite);
+        if(type == 4) return RookEval(pieces, isWhite);
+        //if(type == 6) return KingEval(pieces[0], isWhite, isEndgame);
+        return CentralizationEval(pieces, isWhite);
+    }
+
+    private int KingEval(Piece king, bool isWhite, bool isEndgame)
+    {
+        ulong bitboard = 0;
+        BitboardHelper.SetSquare(ref bitboard, king.Square);
+        if(!isEndgame && (bitboard & (isWhite ? 0xc7 : 0xc700000000000000)) != 0) return isWhite ? 50 : -50;
+        else return 0;
+    }
+    private int PawnEval(PieceList pawns, bool isWhite)
+    {
+        int eval = 0;
+        foreach(Piece pawn in pawns)
+        {
+            ulong bitboard = 0;
+            BitboardHelper.SetSquare(ref bitboard, pawn.Square);
+            int rank = isWhite ? pawn.Square.Rank : 7 - pawn.Square.Rank;
+            eval += 15 * (rank - 1);
+            if((bitboard & (isWhite ? 0xffff7e3c1c1c0000 : 0x1c1c3c7effff)) != 0) eval += 10;
+        }
+        return isWhite ? eval : -eval;
+    }
+
+    private int RookEval(PieceList rooks, bool isWhite)
+    {
+        int eval = 0;
+        foreach(Piece rook in rooks)
+        {
+            int rank = isWhite ? rook.Square.Rank : 7 - rook.Square.Rank;
+            int file = rook.Square.File;
+            if(rank == 6) eval += 100;
+            else if(file > 1) eval += 50;
+        }
+        return isWhite ? eval : -eval;
+    }
+
+    private int CentralizationEval(PieceList pieces, bool isWhite)
+    {
+        int eval = 0;
+        foreach(Piece piece in pieces)
+        {
+            int rank = Math.Min(piece.Square.Rank, 7 - piece.Square.Rank);
+            int file = Math.Min(piece.Square.File, 7 - piece.Square.File);
+            eval += 35 * (Math.Min(rank, file) - 2);
+        }
+        return isWhite ? eval : -eval;
+    }
+
+    #if DEBUGGING
+
+    private string PrintPV(ulong zHash, Board board, int maxPlys, string pvString)
+    {
+        Transposition tp = m_TPTable[zHash & k_TpMask];
+        if(tp.zobristHash == zHash && maxPlys > 0)
+        {
+            board.MakeMove(tp.move);
+            zHash = board.ZobristKey;
+            pvString += tp.move + " - " + PrintPV(zHash, board, maxPlys - 1, pvString);
+            board.UndoMove(tp.move);
+            tp = m_TPTable[zHash & k_TpMask];
+        }
+        return pvString;
+    }
+
+    #endif 
 }
