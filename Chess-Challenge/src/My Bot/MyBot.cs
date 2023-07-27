@@ -1,4 +1,4 @@
-﻿#define DEBUGGING
+﻿//#define LOGGING
 
 using ChessChallenge.API;
 using System;
@@ -25,12 +25,14 @@ public class MyBot : IChessBot
     }; 
 
     private Transposition[] m_TPTable;
-    private ulong k_TpMask = 0x7FFFFF; //9.4 million entries, likely consuming about 151 MB
+    private ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
     private const sbyte k_maxDepth = 8;
     private const int   k_maxTime = 3000;
 
+#if LOGGING
     private int m_evals = 0;
     private int m_nodes = 0;
+#endif
 
 
     public MyBot()
@@ -45,21 +47,29 @@ public class MyBot : IChessBot
         Transposition bestMove = m_TPTable[board.ZobristKey & k_TpMask];
         for(sbyte depth = 1; depth <= k_maxDepth; depth++)
         {
-            m_evals = 0;
-            m_nodes = 0;
+            #if LOGGING
+                m_evals = 0;
+                m_nodes = 0;
+            #endif
             Search(board, depth, int.MinValue, int.MaxValue, board.IsWhiteToMove ? 1 : -1);
             bestMove = m_TPTable[board.ZobristKey & k_TpMask];
-            Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} Milliseconds | Best {4} | Eval: {5}", depth, m_nodes, m_evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
+            #if LOGGING
+                Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} Milliseconds | Best {4} | Eval: {5}", depth, m_nodes, m_evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
+            #endif
             if(!ShouldExecuteNextDepth(timer, k_maxTime)) break;
         }
-        Console.Write("PV: ");
+        #if LOGGING
+            Console.Write("PV: ");
         PrintPV(board);
+        #endif
         return bestMove.move;
     }
 
     public int Search(Board board, sbyte depth, int alpha, int beta, int color)
     {
+        #if LOGGING 
         m_nodes++;
+        #endif
         if(depth <= 0) return QSearch(board, alpha, beta, color);
         int bestEvaluation = int.MinValue;
         int startingAlpha = alpha;
@@ -84,14 +94,9 @@ public class MyBot : IChessBot
 
         foreach(Move m in moves)
         {
-            //debugstr = debugstr.PadLeft((k_maxDepth - depth) * 4);
-            //Console.WriteLine("{0}{1}", debugstr, m);
-            
             board.MakeMove(m);
             int evaluation = -Search(board, (sbyte)(depth - 1), -beta, -alpha, -color);
             board.UndoMove(m);
-
-            //Console.WriteLine("{0}{2}", debugstr, m, evaluation);
 
             if(bestEvaluation < evaluation)
             {
@@ -101,11 +106,6 @@ public class MyBot : IChessBot
 
             alpha = Math.Max(alpha, bestEvaluation);
             if(alpha >= beta) break;
-        }
-
-        if(depth == k_maxDepth)
-        {
-            int breakpoint = 0;
         }
 
         transposition.evaluation = bestEvaluation;
@@ -122,12 +122,11 @@ public class MyBot : IChessBot
 
     int QSearch(Board board, int alpha, int beta, int color)
     {
+        #if LOGGING
         m_nodes++;
+        #endif
         Move[] moves;
-        if(board.IsInCheck())
-        {
-            moves = board.GetLegalMoves();
-        }
+        if(board.IsInCheck()) moves = board.GetLegalMoves();
         else
         {
             moves = board.GetLegalMoves(true);
@@ -181,7 +180,9 @@ public class MyBot : IChessBot
 
     private int Evaluate(Board board, int mobility, int color)
     {
+        #if LOGGING
         m_evals++;
+        #endif
         int materialCount = 0;
         int PSTscores = 0;
         for (int i = 0; ++i < 7;)
@@ -239,6 +240,7 @@ public class MyBot : IChessBot
         return ((maxThinkTime - currentThinkTime) > currentThinkTime * 3);
     }
 
+    #if LOGGING
     private void PrintPV(Board board)
     {
         ulong zHash = board.ZobristKey;
@@ -252,4 +254,5 @@ public class MyBot : IChessBot
         Console.WriteLine("");
         board.UndoMove(tp.move);
     }
+    #endif
 }
