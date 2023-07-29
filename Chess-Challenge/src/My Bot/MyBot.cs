@@ -46,6 +46,10 @@ public class MyBot : IChessBot
 
     public Move Think(Board board, Timer timer)
     {
+        #if LOGGING
+            if(board.GameMoveHistory.Length > 0) Console.WriteLine("Opponent played {0}", board.GameMoveHistory.Last().ToString());
+        #endif
+        
         #if VISUALIZER
             BitboardHelper.VisualizeBitboard(GetBoardControl(PieceType.Pawn, !board.IsWhiteToMove));
         #endif
@@ -61,7 +65,7 @@ public class MyBot : IChessBot
                 m_evals = 0;
                 m_nodes = 0;
             #endif
-            Search(depth, int.MinValue, int.MaxValue, board.IsWhiteToMove ? 1 : -1);
+            Search(depth, -100000000, 100000000, board.IsWhiteToMove ? 1 : -1);
             bestMove = m_TPTable[board.ZobristKey & k_TpMask];
             #if LOGGING
                 Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} Milliseconds | Best {4} | Eval: {5}", depth, m_nodes, m_evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
@@ -70,7 +74,7 @@ public class MyBot : IChessBot
         }
         #if LOGGING
             Console.Write("PV: ");
-        PrintPV(board);
+        PrintPV(board, 20);
         #endif
         return bestMove.move;
     }
@@ -89,15 +93,15 @@ public class MyBot : IChessBot
         if(transposition.zobristHash == m_board.ZobristKey && transposition.flag != INVALID && transposition.depth >= depth)
         {
             if(transposition.flag == EXACT) return transposition.evaluation;
-            else if(transposition.flag == LOWERBOUND) alpha = Math.Max(alpha, transposition.evaluation);
-            else if(transposition.flag == UPPERBOUND) beta = Math.Min(beta, transposition.evaluation);
+            else if(transposition.flag == LOWERBOUND && transposition.evaluation >= beta)  return transposition.evaluation;
+            else if(transposition.flag == UPPERBOUND && transposition.evaluation <= alpha) return transposition.evaluation;
             if(alpha >= beta) return transposition.evaluation;
         }
 
         var moves = m_board.GetLegalMoves();
 
         if(m_board.IsDraw()) return -10;
-        if(m_board.IsInCheckmate()) return int.MinValue + m_board.PlyCount;
+        if(m_board.IsInCheckmate()) return m_board.PlyCount - 100000000;
 
         OrderMoves(ref moves, depth);
  
@@ -148,17 +152,8 @@ public class MyBot : IChessBot
         else
         {
             moves = m_board.GetLegalMoves(true);
-            if(m_board.IsInCheckmate()) return int.MinValue + m_board.PlyCount;
+            if(m_board.IsInCheckmate()) return -100000000 + m_board.PlyCount;
             if(moves.Length == 0) return Evaluate(color);
-        }
-
-        ref Transposition transposition = ref m_TPTable[m_board.ZobristKey & k_TpMask];
-        if(transposition.zobristHash == m_board.ZobristKey && transposition.flag != INVALID && transposition.depth >= 0)
-        {
-            if(transposition.flag == EXACT) return transposition.evaluation;
-            else if(transposition.flag == LOWERBOUND) alpha = Math.Max(alpha, transposition.evaluation);
-            else if(transposition.flag == UPPERBOUND) beta = Math.Min(beta, transposition.evaluation);
-            if(alpha >= beta) return transposition.evaluation;
         }
 
         alpha = Math.Max(Evaluate(color), alpha);
@@ -181,10 +176,10 @@ public class MyBot : IChessBot
 
     void OrderMoves(ref Move[] moves, int depth)
     {
-        List<Tuple<Move, int>> orderedMoves = new();
-        foreach(Move m in moves) orderedMoves.Add(new Tuple<Move, int>(m, GetMovePriority(m, depth)));
-        orderedMoves.Sort((a, b) => b.Item2.CompareTo(a.Item2));
-        for(int i = 0; i < moves.Length; i++) moves[i] = orderedMoves[i].Item1;
+        int[] movePriorities = new int[moves.Length];
+        for(int m = 0; m < moves.Length; m++) movePriorities[m] =  GetMovePriority(moves[m], depth);
+        Array.Sort(movePriorities, moves);
+        Array.Reverse(moves);
     }
 
     int GetMovePriority(Move move, int depth)
@@ -192,9 +187,9 @@ public class MyBot : IChessBot
         int priority = 0;
         Transposition tp = m_TPTable[m_board.ZobristKey & k_TpMask];
         if(tp.move == move && tp.zobristHash == m_board.ZobristKey) 
-            priority += 1000;
+            priority += 100000;
         else if (move.IsCapture) 
-            priority =  2 + 10 * ((int)move.CapturePieceType - (int)move.MovePieceType);
+            priority =  1000 + 10 * (int)move.CapturePieceType - (int)move.MovePieceType;
         else if (depth >= 0 && move.Equals(m_killerMoves[depth]))
             priority =  1;
         return priority;
@@ -206,59 +201,14 @@ public class MyBot : IChessBot
         m_evals++;
         #endif
         int materialCount = 0;
-        // int PSTscores = 0;
-        for (int i = 1; ++i < 7;)
+        for (int i = 0; ++i < 7;)
         {
             materialCount += (m_board.GetPieceList((PieceType)i, true).Count - m_board.GetPieceList((PieceType)i, false).Count) * k_pieceValues[i];
         } 
-        ulong visibleSquaresBitboard = 0;
         var availableMoves = m_board.GetLegalMoves();
         int mobility = availableMoves.Length;
-        foreach(Move m in availableMoves)
-        {
-            BitboardHelper.SetSquare(ref visibleSquaresBitboard, m.TargetSquare);
-            if((int) m.MovePieceType > 1 && (int) m.MovePieceType < 5) mobility++;
-            else if(m.IsCastles) mobility += 5;
-            else if(m.IsPromotion) mobility += 5;
-        }
-
-        return materialCount * color + mobility + BitboardHelper.GetNumberOfSetBits(visibleSquaresBitboard);
+        return materialCount * color + mobility;
     }
-/*  PST stuff
-    // Big table packed with data from premade piece square tables
-    private readonly ulong[,] PackedEvaluationTables = {
-        { 58233348458073600, 61037146059233280, 63851895826342400, 66655671952007680 },
-        { 63862891026503730, 66665589183147058, 69480338950193202, 226499563094066 },
-        { 63862895153701386, 69480338782421002, 5867015520979476,  8670770172137246 },
-        { 63862916628537861, 69480338782749957, 8681765288087306,  11485519939245081 },
-        { 63872833708024320, 69491333898698752, 8692760404692736,  11496515055522836 },
-        { 63884885386256901, 69502350490469883, 5889005753862902,  8703755520970496 },
-        { 63636395758376965, 63635334969551882, 21474836490,       1516 },
-        { 58006849062751744, 63647386663573504, 63625396431020544, 63614422789579264 }
-    };
-
-    private int GetSquareBonus(PieceType type, bool isWhite, int file, int rank)
-    {
-        // Because arrays are only 4 squares wide, mirror across files
-        if (file > 3)
-            file = 7 - file;
-
-        // Mirror vertically for white pieces, since piece arrays are flipped vertically
-        if (isWhite)
-            rank = 7 - rank;
-
-        // First, shift the data so that the correct byte is sitting in the least significant position
-        // Then, mask it out
-        sbyte unpackedData = unchecked((sbyte)((PackedEvaluationTables[rank, file] >> 8 * ((int)type - 1)) & 0xFF));
-
-        // Merge the sign back into the original unpacked data
-        // by first bitwise-ANDing it in with a sign mask, and then ORing it back into the unpacked data
-        //unpackedData = (sbyte)((byte)unpackedData | (0b10000000 & unpackedData));
-
-        // Invert eval scores for black pieces
-        return isWhite ? unpackedData : -unpackedData;
-    }
-*/
 
     bool ShouldExecuteNextDepth(Timer timer, int maxThinkTime)
     {
@@ -269,18 +219,17 @@ public class MyBot : IChessBot
 
 
 #if LOGGING
-private void PrintPV(Board board)
+private void PrintPV(Board board, int depth)
 {
     ulong zHash = board.ZobristKey;
     Transposition tp = m_TPTable[zHash & k_TpMask];
-    if(tp.flag != INVALID && tp.zobristHash == zHash)
+    if(tp.flag != INVALID && tp.zobristHash == zHash && depth >= 0)
     {
         Console.Write("{0} | ", tp.move);
         board.MakeMove(tp.move);
-        PrintPV(board);
+        PrintPV(board, depth - 1);
     }
     Console.WriteLine("");
-    board.UndoMove(tp.move);
 }
 #endif
 
