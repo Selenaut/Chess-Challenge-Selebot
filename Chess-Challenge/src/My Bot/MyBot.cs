@@ -1,4 +1,4 @@
-﻿#define LOGGING
+﻿//#define LOGGING
 //#define VISUALIZER
 
 using ChessChallenge.API;
@@ -9,8 +9,8 @@ using System.Runtime.CompilerServices;
 
 public class MyBot : IChessBot
 {
-                   //PieceType[] pieceTypes    = { PieceType.None, PieceType.Pawn, PieceType.Knight, PieceType.Bishop, PieceType.Rook, PieceType.Queen, PieceType.King};
-    private readonly       int[] k_pieceValues = {           0,              100,            310,              330,              500,            900,             20000 };
+             //PieceType[] pieceTypes    = { PieceType.None, PieceType.Pawn, PieceType.Knight, PieceType.Bishop, PieceType.Rook, PieceType.Queen, PieceType.King};
+    private readonly int[] k_pieceValues = {           0,              100,            310,              330,              500,            900,             20000 };
 
     int[] piecePhase = {0, 0, 1, 1, 2, 4, 0};
     ulong[] psts = {
@@ -35,7 +35,7 @@ public class MyBot : IChessBot
     401758895947998613, 420612834953622999, 402607438610388375, 329978099633296596, 
     67159620133902};
     
-    private const byte INVALID = 0, EXACT = 1, LOWERBOUND = 2, UPPERBOUND = 3;
+    //private const byte INVALID = 0, EXACT = 1, LOWERBOUND = 2, UPPERBOUND = 3;
 
     //14 bytes per entry, likely will align to 16 bytes due to padding (if it aligns to 32, recalculate max TP table size)
     struct Transposition
@@ -50,8 +50,6 @@ public class MyBot : IChessBot
     Move[] m_killerMoves;
 
     Transposition[] m_TPTable;
-    ulong k_TpMask = 0x7FFFFF; //4.7 million entries, likely consuming about 151 MB
-    int k_timefraction = 40;
 
     Board m_board;
 
@@ -64,7 +62,7 @@ public class MyBot : IChessBot
     public MyBot()
     {
         m_killerMoves = new Move[1024];
-        m_TPTable = new Transposition[k_TpMask + 1];
+        m_TPTable = new Transposition[0x800000];
     }
 
     public Move Think(Board board, Timer timer)
@@ -80,8 +78,8 @@ public class MyBot : IChessBot
         #if LOGGING
         Console.WriteLine(board.GetFenString());
         #endif
-        Transposition bestMove = m_TPTable[board.ZobristKey & k_TpMask];
-        int maxTime = timer.MillisecondsRemaining/k_timefraction;
+        Transposition bestMove = m_TPTable[board.ZobristKey & 0x7FFFFF];
+        int maxTime = timer.MillisecondsRemaining/30;
         for(sbyte depth = 1;; depth++)
         {
             #if LOGGING
@@ -89,7 +87,7 @@ public class MyBot : IChessBot
                 m_nodes = 0;
             #endif
             Search(depth, -100000000, 100000000);
-            bestMove = m_TPTable[board.ZobristKey & k_TpMask];
+            bestMove = m_TPTable[board.ZobristKey & 0x7FFFFF];
             #if LOGGING
                 Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} Milliseconds | Best {4} | Eval: {5}", depth, m_nodes, m_evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
             #endif
@@ -117,15 +115,15 @@ public class MyBot : IChessBot
         if(!pvNode && !inQSearch) beta = alpha--;
 
         //See if we've checked this board state before
-        ref Transposition transposition = ref m_TPTable[m_board.ZobristKey & k_TpMask];
-        if(transposition.zobristHash == m_board.ZobristKey && transposition.flag != INVALID && transposition.depth >= depth)
+        ref Transposition transposition = ref m_TPTable[m_board.ZobristKey & 0x7FFFFF];
+        if(transposition.zobristHash == m_board.ZobristKey && transposition.depth >= depth)
         {
             //If we have an "exact" score (a < score < beta) just use that
-            if(transposition.flag == EXACT) return transposition.evaluation;
+            if(transposition.flag == 1) return transposition.evaluation;
             //If we have a lower bound better than beta, use that
-            if(transposition.flag == LOWERBOUND && transposition.evaluation >= beta)  return transposition.evaluation;
+            if(transposition.flag == 2 && transposition.evaluation >= beta)  return transposition.evaluation;
             //If we have an upper bound worse than alpha, use that
-            if(transposition.flag == UPPERBOUND && transposition.evaluation <= alpha) return transposition.evaluation;
+            if(transposition.flag == 3 && transposition.evaluation <= alpha) return transposition.evaluation;
         }
 
         //Leaf node conditions
@@ -179,14 +177,14 @@ public class MyBot : IChessBot
             transposition.zobristHash = m_board.ZobristKey;
             transposition.move = bestMove;
             if(bestEvaluation < startingAlpha) 
-                transposition.flag = UPPERBOUND;
+                transposition.flag = 3;
             else if(bestEvaluation >= beta) 
             {
-                transposition.flag = LOWERBOUND;
+                transposition.flag = 2;
                 if(!bestMove.IsCapture) 
                     m_killerMoves[depth] = bestMove;
             }
-            else transposition.flag = EXACT;
+            else transposition.flag = 1;
             transposition.depth = (sbyte)depth;
         }
 
@@ -205,7 +203,7 @@ public class MyBot : IChessBot
     {
         int priority = 0;
         //a move in the TT is likely PV
-        Transposition tp = m_TPTable[m_board.ZobristKey & k_TpMask];
+        Transposition tp = m_TPTable[m_board.ZobristKey & 0x7FFFFF];
         if(tp.move == move && tp.zobristHash == m_board.ZobristKey) 
             priority += 100000;
         //Captures ordered in MVVLVA order
@@ -263,7 +261,7 @@ public class MyBot : IChessBot
 private void PrintPV(Board board, int depth)
 {
     ulong zHash = board.ZobristKey;
-    Transposition tp = m_TPTable[zHash & k_TpMask];
+    Transposition tp = m_TPTable[zHash & 0x7FFFFF];
     if(tp.flag != INVALID && tp.zobristHash == zHash && depth >= 0)
     {
         Console.Write("{0} | ", tp.move);
