@@ -1,4 +1,4 @@
-﻿//#define LOGGING
+﻿#define LOGGING
 //#define VISUALIZER
 
 using ChessChallenge.API;
@@ -88,7 +88,7 @@ public class MyBot : IChessBot
                 m_evals = 0;
                 m_nodes = 0;
             #endif
-            Search(depth, -100000000, 100000000, board.IsWhiteToMove ? 1 : -1, true);
+            Search(depth, -100000000, 100000000);
             bestMove = m_TPTable[board.ZobristKey & k_TpMask];
             #if LOGGING
                 Console.WriteLine("Depth: {0,2} | Nodes: {1,10} | Evals: {2,10} | Time: {3,5} Milliseconds | Best {4} | Eval: {5}", depth, m_nodes, m_evals, timer.MillisecondsElapsedThisTurn, bestMove.move, bestMove.evaluation);
@@ -102,18 +102,19 @@ public class MyBot : IChessBot
         return bestMove.move;
     }
 
-    int Search(int depth, int alpha, int beta, int color, bool PVS)
+    int Search(int depth, int alpha, int beta)
     {
         #if LOGGING 
         m_nodes++;
         #endif
         
         bool inQSearch = depth <= 0;
+        bool pvNode = beta > alpha + 1;
         int bestEvaluation = -2147483647;
         int startingAlpha = alpha;
 
         //PVS stuff
-        //if(!PVS) beta = alpha--;
+        if(!pvNode && !inQSearch) beta = alpha--;
 
         //See if we've checked this board state before
         ref Transposition transposition = ref m_TPTable[m_board.ZobristKey & k_TpMask];
@@ -122,20 +123,19 @@ public class MyBot : IChessBot
             //If we have an "exact" score (a < score < beta) just use that
             if(transposition.flag == EXACT) return transposition.evaluation;
             //If we have a lower bound better than beta, use that
-            else if(transposition.flag == LOWERBOUND && transposition.evaluation >= beta)  return transposition.evaluation;
+            if(transposition.flag == LOWERBOUND && transposition.evaluation >= beta)  return transposition.evaluation;
             //If we have an upper bound worse than alpha, use that
-            else if(transposition.flag == UPPERBOUND && transposition.evaluation <= alpha) return transposition.evaluation;
+            if(transposition.flag == UPPERBOUND && transposition.evaluation <= alpha) return transposition.evaluation;
         }
 
         //Leaf node conditions
         if(m_board.IsDraw()) return -10;
         if(m_board.IsInCheckmate()) return m_board.PlyCount - 100000000;
 
-        int standingPat = Evaluate(color);
+        int standingPat = Evaluate();
 
         //RFP implementation
-        //Add PVS check when implemented properly
-        if(!m_board.IsInCheck() && !inQSearch && depth <= 3 && standingPat >= beta + 200*depth) return standingPat;
+        if(!pvNode && !inQSearch && depth <= 1 && !m_board.IsInCheck() && standingPat >= beta + 2000*depth) return standingPat;
 
         //QSearch: leaf none & standing-pat implementation
         //Get all moves if in check or not in QSearch, otherwise get all moves
@@ -155,10 +155,9 @@ public class MyBot : IChessBot
         for(int m = 0; m < moves.Length; m++)
         {
             m_board.MakeMove(moves[m]);
-            int evaluation = -Search((sbyte)(depth - 1), -beta, -alpha, -color, m == 0);
-            //PVS check;
-            //Force PVS if non-PV was good
-            //if(m != 0 && evaluation > alpha && evaluation < beta) evaluation = -Search((sbyte)(depth - 1), -beta, -alpha, -color, true);
+            int evaluation = -Search(depth - 1, (m == 0) ? -beta : -alpha - 1, -alpha);
+            if(m != 0 && evaluation > alpha && evaluation < beta)
+                    evaluation = -Search(depth - 1, -beta, -alpha);  //Use full window if null window was good
             m_board.UndoMove(moves[m]);
 
             if(bestEvaluation < evaluation)
@@ -219,7 +218,7 @@ public class MyBot : IChessBot
         return priority;
     }
 
-    int Evaluate(int color)
+    int Evaluate()
     {
         #if LOGGING
         m_evals++;
@@ -245,7 +244,7 @@ public class MyBot : IChessBot
             eg = -eg;
         }
 
-        return (mg * phase + eg * (24 - phase)) / 24 * color;
+        return (mg * phase + eg * (24 - phase)) / 24 * (m_board.IsWhiteToMove ? 1 : -1);
     }
 
     int getPstVal(int psq) {
