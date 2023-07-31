@@ -131,7 +131,7 @@ public class MyBot : IChessBot
         int standingPat = Evaluate();
 
         //RFP implementation
-        if(!pvNode && !inQSearch && depth <= 1 && !m_board.IsInCheck() && standingPat >= beta + 2000*depth) return standingPat;
+        if(!pvNode && !inQSearch && depth <= 2 && !m_board.IsInCheck() && standingPat >= beta + 125*depth) return standingPat;
 
         //QSearch: leaf none & standing-pat implementation
         //Get all moves if in check or not in QSearch, otherwise get all moves
