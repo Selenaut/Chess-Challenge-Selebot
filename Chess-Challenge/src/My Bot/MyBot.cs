@@ -53,10 +53,10 @@ public class MyBot : IChessBot
 
     Board m_board;
 
-#if LOGGING
+    #if LOGGING
     private int m_evals = 0;
     private int m_nodes = 0;
-#endif
+    #endif
 
 
     public MyBot()
@@ -76,7 +76,7 @@ public class MyBot : IChessBot
         #endif
         m_board = board;
         #if LOGGING
-        Console.WriteLine(board.GetFenString());
+            Console.WriteLine(board.GetFenString());
         #endif
         Transposition bestMove = m_TPTable[board.ZobristKey & 0x7FFFFF];
         int maxTime = timer.MillisecondsRemaining/30;
@@ -95,7 +95,8 @@ public class MyBot : IChessBot
         }
         #if LOGGING
             Console.Write("PV: ");
-        PrintPV(board, 20);
+            PrintPV(board, 20);
+            Console.WriteLine("");
         #endif
         return bestMove.move;
     }
@@ -111,12 +112,9 @@ public class MyBot : IChessBot
         int bestEvaluation = -2147483647;
         int startingAlpha = alpha;
 
-        //PVS stuff
-        if(!pvNode && !inQSearch) beta = alpha--;
-
         //See if we've checked this board state before
         ref Transposition transposition = ref m_TPTable[m_board.ZobristKey & 0x7FFFFF];
-        if(transposition.zobristHash == m_board.ZobristKey && transposition.depth >= depth)
+        if(!pvNode && transposition.zobristHash == m_board.ZobristKey && transposition.depth >= depth)
         {
             //If we have an "exact" score (a < score < beta) just use that
             if(transposition.flag == 1) return transposition.evaluation;
@@ -141,7 +139,7 @@ public class MyBot : IChessBot
         if(moves.Length == 0) return standingPat; //Can't get here in checkmate (see above)
         if(inQSearch)
         {
-            if(standingPat >= beta) return beta;
+            if(standingPat >= beta) return standingPat;
             if(standingPat > alpha) alpha = standingPat;
         }
 
@@ -153,9 +151,9 @@ public class MyBot : IChessBot
         for(int m = 0; m < moves.Length; m++)
         {
             m_board.MakeMove(moves[m]);
-            int evaluation = -Search(depth - 1, (m == 0) ? -beta : -alpha - 1, -alpha);
-            if(m != 0 && evaluation > alpha && evaluation < beta)
-                    evaluation = -Search(depth - 1, -beta, -alpha);  //Use full window if null window was good
+            int evaluation = -Search(depth - 1, (inQSearch || m == 0) ? -beta : -alpha - 1, -alpha);
+            if (!inQSearch && m != 0 && evaluation > alpha && evaluation < beta)
+                evaluation = -Search(depth - 1, -beta, -alpha);  //Use full window if null window was good
             m_board.UndoMove(moves[m]);
 
             if(bestEvaluation < evaluation)
@@ -226,26 +224,28 @@ public class MyBot : IChessBot
 
         int mg = 0, eg = 0, phase = 0;
 
-        foreach(bool stm in new[] {true, false}) {
-            for(var p = PieceType.Pawn; p <= PieceType.King; p++) {
+        foreach(bool stm in new[] {true, false}) 
+        {
+            for(var p = PieceType.Pawn; p <= PieceType.King; p++) 
+            {
                 int piece = (int)p, ind;
                 ulong mask = m_board.GetPieceBitboard(p, stm);
-                while(mask != 0) {
+                while(mask != 0) 
+                {
                     phase += piecePhase[piece];
                     ind = 128 * (piece - 1) + BitboardHelper.ClearAndGetIndexOfLSB(ref mask) ^ (stm ? 56 : 0);
                     mg += getPstVal(ind) + k_pieceValues[piece];
                     eg += getPstVal(ind + 64) + k_pieceValues[piece];
                 }
             }
-
             mg = -mg;
             eg = -eg;
         }
-
         return (mg * phase + eg * (24 - phase)) / 24 * (m_board.IsWhiteToMove ? 1 : -1);
     }
 
-    int getPstVal(int psq) {
+    int getPstVal(int psq) 
+    {
         return (int)(((psts[psq / 10] >> (6 * (psq % 10))) & 63) - 20) * 8;
     }
 
@@ -262,13 +262,12 @@ private void PrintPV(Board board, int depth)
 {
     ulong zHash = board.ZobristKey;
     Transposition tp = m_TPTable[zHash & 0x7FFFFF];
-    if(tp.flag != INVALID && tp.zobristHash == zHash && depth >= 0)
+    if(tp.flag != 0 && tp.zobristHash == zHash && depth >= 0)
     {
         Console.Write("{0} | ", tp.move);
         board.MakeMove(tp.move);
         PrintPV(board, depth - 1);
     }
-    Console.WriteLine("");
 }
 #endif
 
